@@ -2,18 +2,11 @@
 """
 server.py
 
-Skeleton IRC-style server implementing the CS594 sample RFC.
-
 - Listens on TCP port 7734
 - Accepts clients, expects a HELLO packet first
 - Tracks connected clients and rooms (data structures are here)
 - Provides helper functions for encoding/decoding packets
 
-You should fill in the TODOs to fully implement the RFC:
-  - JOIN_ROOM / LEAVE_ROOM
-  - LIST_ROOMS / LIST_USERS_RESP
-  - SEND_MSG / SEND_PRIV_MSG -> TELL_MSG / TELL_PRIV_MSG
-  - Error handling, timeouts, etc.
 """
 
 import socket
@@ -28,6 +21,11 @@ import time
 PORT = 7734
 VERSION_MAGIC = 0xFACE0FF1
 
+# Server limits (for error codes)
+MAX_USERS = 100
+MAX_ROOMS = 50
+MAX_MSG_LEN = 8000  # bytes (after the 20-byte label)
+
 # Opcodes
 IRC_OPCODE_ERR             = 0x10000001
 IRC_OPCODE_KEEPALIVE       = 0x10000002
@@ -41,6 +39,7 @@ IRC_OPCODE_SEND_MSG        = 0x10000009
 IRC_OPCODE_TELL_MSG        = 0x10000010
 IRC_OPCODE_SEND_PRIV_MSG   = 0x10000011
 IRC_OPCODE_TELL_PRIV_MSG   = 0x10000012
+IRC_OPCODE_LIST_USERS      = 0x10000013
 
 # Error codes
 IRC_ERR_UNKNOWN         = 0x20000001
@@ -67,7 +66,6 @@ def encode_label(name: str) -> bytes:
       - 1..20 printable ASCII chars (0x20-0x7E)
       - no leading/trailing space
       - null-terminated if shorter than 20, rest nulls
-    This helper is intentionally simple; you can add full validation.
     """
     name = name.strip()
     if not (1 <= len(name) <= 20):
@@ -147,8 +145,6 @@ def build_error_payload(error_code: int) -> bytes:
 
 class IRCServer:
     """
-    Skeleton IRC server.
-
     Shared state:
       - clients_by_name: name -> (socket, addr)
       - rooms: room_name -> set(user_names)
@@ -240,11 +236,14 @@ class IRCServer:
                 opcode, payload = recv_packet(sock)
 
                 if opcode == IRC_OPCODE_KEEPALIVE:
-                    # TODO: track last-seen time if you want application-level timeouts
+                    # TODO: track last-seen time if we want application-level timeouts
                     continue
 
                 elif opcode == IRC_OPCODE_LIST_ROOMS:
                     self.handle_list_rooms(sock)
+
+                elif opcode == IRC_OPCODE_LIST_USERS:
+                    self.handle_list_users(sock, payload)
 
                 elif opcode == IRC_OPCODE_JOIN_ROOM:
                     self.handle_join_room(user_name, payload)
@@ -256,12 +255,9 @@ class IRCServer:
                     self.handle_send_msg(user_name, opcode, payload)
 
                 else:
-                    # Unknown opcode: send error and optionally close connection
                     print(f"[SERVER] Unknown opcode {opcode:#x} from {user_name}")
-                    send_packet(sock, IRC_OPCODE_ERR,
-                                build_error_payload(IRC_ERR_ILLEGAL_OPCODE))
-                    # You may choose to break here to close connection:
-                    # break
+                    self.send_error_to_user(user_name, IRC_ERR_ILLEGAL_OPCODE)
+                    break
 
         except ConnectionError:
             print(f"[SERVER] Connection lost from {addr} (user={user_name})")
@@ -300,6 +296,37 @@ class IRCServer:
 
         send_packet(sock, IRC_OPCODE_LIST_ROOMS_RESP, payload)
 
+    def handle_list_users(self, sock, payload):
+        """
+        Handle IRC_OPCODE_LIST_USERS.
+
+        Payload format for response:
+          struct irc_pkt_list_resp {
+              irc_pkt_header header;
+              char identifier[20];       // e.g., "rooms"
+              char item_names[][20];     // user labels
+          }
+
+        Behavior:
+          - list members of room
+          - Respond with IRC_OPCODE_LIST_USERS_RESP
+        """
+        if len(payload) != 20:
+            print("[SERVER] LIST_USERS: invalid payload length")
+            return
+        
+        room_name = decode_label(payload)
+
+        with self.lock:
+            members = list(self.rooms.get(room_name, []))
+
+        payload = encode_label(room_name)
+        for u in members:
+            payload += encode_label(u)
+
+        send_packet(sock, IRC_OPCODE_LIST_USERS_RESP, payload)
+
+
     def handle_join_room(self, user_name: str, payload: bytes):
         """
         Handle IRC_OPCODE_JOIN_ROOM.
@@ -313,15 +340,25 @@ class IRCServer:
         """
         if len(payload) != 20:
             # length is wrong => error
-            # In a full implementation, you'd send IRC_ERR_ILLEGAL_LENGTH
             print("[SERVER] JOIN_ROOM: invalid payload length")
             return
 
         room_name = decode_label(payload)
 
+        if not self.is_valid_name(room_name):
+            print(f"[SERVER] JOIN_ROOM: illegal room name {room_name!r}")
+            self.send_error_to_user(user_name, IRC_ERR_ILLEGAL_NAME)
+            return
+
         with self.lock:
-            members = self.rooms.setdefault(room_name, set())
-            members.add(user_name)
+            # If this is a new room, enforce room limit
+            if room_name not in self.rooms and len(self.rooms) >= MAX_ROOMS:
+                print("[SERVER] JOIN_ROOM: too many rooms, rejecting creation")
+                self.send_error_to_user(user_name, IRC_ERR_TOO_MANY_ROOMS)
+                return
+
+        members = self.rooms.setdefault(room_name, set())
+        members.add(user_name)
 
         print(f"[SERVER] {user_name} joined room '{room_name}'")
         self.send_room_membership_update(room_name)
@@ -347,7 +384,7 @@ class IRCServer:
         with self.lock:
             members = self.rooms.get(room_name)
             if not members or user_name not in members:
-                # RFC: server SHOULD ignore leave requests when user isn't in room
+                # RFC: ignore leaves for rooms user is not in
                 return
             members.remove(user_name)
             if not members:
@@ -367,10 +404,6 @@ class IRCServer:
           char target_name[20];
           char msg[LENGTH - 20];
 
-        TODO:
-          - enforce max length (<8000)
-          - enforce ASCII constraints from RFC
-          - terminate connection + send IRC_ERR_ILLEGAL_MESSAGE on violations
         """
         if len(payload) < 20:
             print("[SERVER] SEND_MSG: invalid payload length")
@@ -379,12 +412,25 @@ class IRCServer:
         target_name = decode_label(payload[:20])
         msg_bytes = payload[20:]
 
+        # Enforce max length
+        if len(msg_bytes) > MAX_MSG_LEN:
+            print("[SERVER] SEND_MSG: message too long from", user_name)
+            self.send_error_to_user(user_name, IRC_ERR_ILLEGAL_MESSAGE)
+            return
+
+        # Enforce simple ASCII constraints (printable + newline)
+        for b in msg_bytes:
+            if not (b == 0x0A or 0x20 <= b <= 0x7E):
+                print("[SERVER] SEND_MSG: illegal message character from", user_name)
+                self.send_error_to_user(user_name, IRC_ERR_ILLEGAL_MESSAGE)
+                return
+
         if opcode == IRC_OPCODE_SEND_MSG:
             # Message to room
             with self.lock:
                 members = list(self.rooms.get(target_name, []))
                 sockets = [self.clients_by_name[u][0] for u in members
-                           if u in self.clients_by_name]
+                        if u in self.clients_by_name]
 
             print(f"[SERVER] Room message to '{target_name}' from '{user_name}': "
                   f"{msg_bytes.decode(errors='replace')!r}")
@@ -445,6 +491,42 @@ class IRCServer:
                         del self.rooms[room]
                     else:
                         self.send_room_membership_update(room)
+
+
+    # helpers for validation / errors
+
+    @staticmethod
+    def is_valid_name(name: str) -> bool:
+        """
+        Check if a user/room name is valid according to simple rules:
+          - 1..20 characters (encode_label enforces this too)
+          - ASCII printable (space .. '~')
+        """
+        if not (1 <= len(name) <= 20):
+            return False
+        for ch in name:
+            if not (0x20 <= ord(ch) <= 0x7E):
+                return False
+        return True
+
+    def send_error_to_sock(self, sock: socket.socket, error_code: int):
+        """Send an IRC_OPCODE_ERR with the given code to this socket."""
+        try:
+            send_packet(sock, IRC_OPCODE_ERR, build_error_payload(error_code))
+        except OSError:
+            pass
+
+    def send_error_to_user(self, user_name: str, error_code: int):
+        """
+        Look up a user's socket and send an error.
+        Safe to call from any handler that only has user_name.
+        """
+        with self.lock:
+            info = self.clients_by_name.get(user_name)
+        if not info:
+            return
+        sock, _ = info
+        self.send_error_to_sock(sock, error_code)
 
 
 def main():

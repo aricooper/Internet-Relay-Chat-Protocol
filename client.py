@@ -2,8 +2,6 @@
 """
 client.py
 
-Skeleton IRC-style client for the CS594 sample RFC.
-
 Features:
   - Connects to server on TCP port 7734
   - Sends HELLO with version magic and chat_name
@@ -11,10 +9,6 @@ Features:
     (JOIN, LEAVE, LIST, MSG, PRIV, QUIT)
   - Receives and prints server messages
 
-You should fill in / refine:
-  - Proper message validation / encoding rules
-  - Better UI / room tracking
-  - Handling of error opcodes
 """
 
 import socket
@@ -43,6 +37,8 @@ IRC_OPCODE_SEND_MSG        = 0x10000009
 IRC_OPCODE_TELL_MSG        = 0x10000010
 IRC_OPCODE_SEND_PRIV_MSG   = 0x10000011
 IRC_OPCODE_TELL_PRIV_MSG   = 0x10000012
+IRC_OPCODE_LIST_USERS      = 0x10000013
+
 
 # Error codes (optional use on client side)
 IRC_ERR_UNKNOWN         = 0x20000001
@@ -54,6 +50,19 @@ IRC_ERR_ILLEGAL_NAME    = 0x20000006
 IRC_ERR_ILLEGAL_MESSAGE = 0x20000007
 IRC_ERR_TOO_MANY_USERS  = 0x20000008
 IRC_ERR_TOO_MANY_ROOMS  = 0x20000009
+
+ERROR_MESSAGES = {
+    IRC_ERR_UNKNOWN:         "Unknown error",
+    IRC_ERR_ILLEGAL_OPCODE:  "Illegal / unsupported opcode",
+    IRC_ERR_ILLEGAL_LENGTH:  "Illegal packet length",
+    IRC_ERR_WRONG_VERSION:   "Wrong protocol version (VERSION_MAGIC mismatch)",
+    IRC_ERR_NAME_EXISTS:     "Chat name already in use",
+    IRC_ERR_ILLEGAL_NAME:    "Illegal user or room name",
+    IRC_ERR_ILLEGAL_MESSAGE: "Illegal message contents (too long or bad characters)",
+    IRC_ERR_TOO_MANY_USERS:  "Server has reached the maximum number of users",
+    IRC_ERR_TOO_MANY_ROOMS:  "Server has reached the maximum number of rooms",
+}
+
 
 HEADER_STRUCT = struct.Struct("!II")  # opcode, length
 
@@ -111,15 +120,12 @@ def parse_error_payload(payload: bytes) -> int:
     (code,) = struct.unpack("!I", payload)
     return code
 
-
 # =========================
 # Client implementation
 # =========================
 
 class IRCClient:
     """
-    Skeleton IRC client.
-
     - Connects to server
     - Sends HELLO with chat_name
     - Spawns:
@@ -157,11 +163,25 @@ class IRCClient:
     def send_hello(self):
         """
         Send the initial HELLO packet:
-          ver_magic (uint32) + chat_name[20]
+        ver_magic (uint32) + chat_name[20]
         """
-        payload = struct.pack("!I", VERSION_MAGIC) + encode_label(self.chat_name)
+        try:
+            name_bytes = encode_label(self.chat_name)
+        except ValueError as e:
+            print(f"[CLIENT] Invalid chat name: {e}")
+            # Close the socket and stop the client cleanly
+            self.running = False
+            try:
+                if self.sock is not None:
+                    self.sock.close()
+            except OSError:
+                pass
+            return
+
+        payload = struct.pack("!I", VERSION_MAGIC) + name_bytes
         send_packet(self.sock, IRC_OPCODE_HELLO, payload)
         print(f"[CLIENT] Sent HELLO as '{self.chat_name}'")
+
 
     def keepalive_loop(self):
         """
@@ -185,8 +205,9 @@ class IRCClient:
 
                 if opcode == IRC_OPCODE_ERR:
                     code = parse_error_payload(payload)
-                    print(f"[CLIENT] ERROR from server: 0x{code:08x}")
-                    # For a real implementation, you'd handle specific codes here
+                    msg = ERROR_MESSAGES.get(code, "Unrecognized error code")
+                    print(f"[CLIENT] ERROR from server: {msg} (0x{code:08x})")
+                    # In this simple client, we just stop on any server error:
                     self.running = False
 
                 elif opcode == IRC_OPCODE_LIST_ROOMS_RESP:
@@ -284,6 +305,7 @@ class IRCClient:
         Simple command-line interface:
           /join ROOM
           /leave ROOM
+          /users ROOM
           /rooms
           /msg ROOM message...
           /priv USER message...
@@ -292,6 +314,7 @@ class IRCClient:
         print("Commands:")
         print("  /join ROOM")
         print("  /leave ROOM")
+        print("  /users ROOM")
         print("  /rooms")
         print("  /msg ROOM your message here")
         print("  /priv USER your private message here")
@@ -334,13 +357,30 @@ class IRCClient:
 
         elif cmd == "/join" and len(parts) >= 2:
             room = parts[1]
-            payload = encode_label(room)
+            try:
+                payload = encode_label(room)
+            except ValueError as e:
+                print(f"[CLIENT] Invalid room name: {e}")
+                return
             send_packet(self.sock, IRC_OPCODE_JOIN_ROOM, payload)
 
         elif cmd == "/leave" and len(parts) >= 2:
             room = parts[1]
-            payload = encode_label(room)
+            try:
+                payload = encode_label(room)
+            except ValueError as e:
+                print(f"[CLIENT] Invalid room name: {e}")
+                return
             send_packet(self.sock, IRC_OPCODE_LEAVE_ROOM, payload)
+        
+        elif cmd == "/users" and len(parts) >= 2:
+            room = parts[1]
+            try:
+                payload = encode_label(room)
+            except ValueError as e:
+                print(f"[CLIENT] Invalid room name: {e}")
+                return
+            send_packet(self.sock, IRC_OPCODE_LIST_USERS, payload)
 
         elif cmd == "/rooms":
             send_packet(self.sock, IRC_OPCODE_LIST_ROOMS, b"")
@@ -348,21 +388,30 @@ class IRCClient:
         elif cmd == "/msg" and len(parts) >= 3:
             room = parts[1]
             msg = parts[2] + "\n"
-            payload = encode_label(room) + msg.encode("ascii", errors="replace")
+            try:
+                payload = encode_label(room) + msg.encode("ascii", errors="replace")
+            except ValueError as e:
+                print(f"[CLIENT] Invalid room name: {e}")
+                return
             send_packet(self.sock, IRC_OPCODE_SEND_MSG, payload)
 
         elif cmd == "/priv" and len(parts) >= 3:
             user = parts[1]
             msg = parts[2] + "\n"
-            payload = encode_label(user) + msg.encode("ascii", errors="replace")
+            try:
+                payload = encode_label(user) + msg.encode("ascii", errors="replace")
+            except ValueError as e:
+                print(f"[CLIENT] Invalid user name: {e}")
+                return
             send_packet(self.sock, IRC_OPCODE_SEND_PRIV_MSG, payload)
+
 
         else:
             print("[CLIENT] Unknown or malformed command.")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="IRC RFC client skeleton")
+    parser = argparse.ArgumentParser(description="IRC RFC client")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=PORT)
     parser.add_argument("--name", required=True, help="Chat name (1..20 chars)")
