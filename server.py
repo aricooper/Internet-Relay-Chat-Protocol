@@ -4,7 +4,7 @@ server.py
 
 - Listens on TCP port 7734
 - Accepts clients, expects a HELLO packet first
-- Tracks connected clients and rooms (data structures are here)
+- Tracks connected clients and rooms
 - Provides helper functions for encoding/decoding packets
 
 """
@@ -62,7 +62,7 @@ HEADER_STRUCT = struct.Struct("!II")
 
 def encode_label(name: str) -> bytes:
     """
-    Encode a user/room label into 20 bytes with RFC semantics:
+    Encode a user/room label into 20 bytes with RFC :
       - 1..20 printable ASCII chars (0x20-0x7E)
       - no leading/trailing space
       - null-terminated if shorter than 20, rest nulls
@@ -236,7 +236,6 @@ class IRCServer:
                 opcode, payload = recv_packet(sock)
 
                 if opcode == IRC_OPCODE_KEEPALIVE:
-                    # TODO: track last-seen time if we want application-level timeouts
                     continue
 
                 elif opcode == IRC_OPCODE_LIST_ROOMS:
@@ -271,7 +270,7 @@ class IRCServer:
             except OSError:
                 pass
 
-    # ======= Handlers (to fill in) =======
+    # ======= Handlers =======
 
     def handle_list_rooms(self, sock: socket.socket):
         """
@@ -284,7 +283,6 @@ class IRCServer:
               char item_names[][20];     // room labels
           }
 
-        TODO: implement label semantics fully, filter out empty rooms, etc.
         """
         with self.lock:
             room_names = [r for r, members in self.rooms.items() if members]
