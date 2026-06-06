@@ -1,93 +1,102 @@
-# CS594_Final_Project
+# IRC Chat Protocol
 
+A custom IRC-style client/server chat system implemented in Python from scratch, based on a self-authored RFC-style protocol specification. Built for PSU CS 594, Internetworking Protocols, Fall 2025.
 
+## Overview
 
-## Getting started
+This project implements a binary TCP messaging protocol and a complete client/server system supporting multi-room chat, private messaging, and connection management. The protocol specification (`RFC.pdf`) was written as part of the project, following IETF Internet-Draft conventions.
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+## Features
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+- Multi-user chat server handling concurrent connections via threading
+- Named chat rooms — join, leave, list, and broadcast messages
+- Private messaging between users
+- Keepalive mechanism to detect dropped connections
+- Protocol version negotiation via magic number (`0xFACE0FF1`)
+- Structured binary packet format (opcode + length header, network byte order)
+- Server-side limits: up to 100 users, 50 rooms, 8KB messages
+- Error codes for all failure modes (wrong version, name conflicts, capacity limits, etc.)
 
-## Add your files
+## Protocol
 
-- [ ] [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-- [ ] [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+All communication runs over TCP on port 7734. Packets use an 8-byte header:
 
 ```
-cd existing_repo
-git remote add origin https://gitlab.cecs.pdx.edu/acoop/cs594_final_project.git
-git branch -M main
-git push -uf origin main
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                           opcode                              |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                      payload length                           |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                         payload ...                           |
 ```
 
-## Integrate with your tools
+User and room names are fixed-width 20-byte ASCII labels, null-padded.
 
-- [ ] [Set up project integrations](https://gitlab.cecs.pdx.edu/acoop/cs594_final_project/-/settings/integrations)
+**Opcodes:**
 
-## Collaborate with your team
+| Opcode | Value | Direction | Description |
+|--------|-------|-----------|-------------|
+| HELLO | `0x10000003` | C→S | Register with chat name |
+| KEEPALIVE | `0x10000002` | C↔S | Connection heartbeat |
+| JOIN_ROOM | `0x10000007` | C→S | Join a named room |
+| LEAVE_ROOM | `0x10000008` | C→S | Leave a room |
+| SEND_MSG | `0x10000009` | C→S | Send message to room |
+| TELL_MSG | `0x10000010` | S→C | Deliver room message |
+| SEND_PRIV_MSG | `0x10000011` | C→S | Send private message |
+| TELL_PRIV_MSG | `0x10000012` | S→C | Deliver private message |
+| LIST_ROOMS | `0x10000004` | C→S | Request room list |
+| LIST_ROOMS_RESP | `0x10000005` | S→C | Room list response |
+| LIST_USERS | `0x10000013` | C→S | Request users in room |
+| LIST_USERS_RESP | `0x10000006` | S→C | User list response |
+| ERR | `0x10000001` | S→C | Error notification |
 
-- [ ] [Invite team members and collaborators](https://docs.gitlab.com/ee/user/project/members/)
-- [ ] [Create a new merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-- [ ] [Automatically close issues from merge requests](https://docs.gitlab.com/ee/user/project/issues/managing_issues.html#closing-issues-automatically)
-- [ ] [Enable merge request approvals](https://docs.gitlab.com/ee/user/project/merge_requests/approvals/)
-- [ ] [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
-
-## Test and Deploy
-
-Use the built-in continuous integration in GitLab.
-
-- [ ] [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/)
-- [ ] [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
-- [ ] [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
-- [ ] [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
-- [ ] [Set up protected environments](https://docs.gitlab.com/ee/ci/environments/protected_environments.html)
-
-***
-
-# Editing this README
-
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
-
-## Suggestions for a good README
-
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
-
-## Name
-Choose a self-explaining name for your project.
-
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
-
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
-
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+Full protocol specification: [RFC.pdf](RFC.pdf)
 
 ## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+**Start the server:**
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+```bash
+python server.py
+```
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+**Connect a client:**
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+```bash
+python client.py --host 127.0.0.1 --name alice
+```
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+**Client commands:**
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+```
+/join ROOM          join a chat room
+/leave ROOM         leave a room
+/rooms              list all rooms
+/users ROOM         list users in a room
+/msg ROOM message   send a message to a room
+/priv USER message  send a private message
+/quit               disconnect
+```
 
-## License
-For open source projects, say how it is licensed.
+**Example session:**
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+```
+> /join general
+> /msg general hello everyone
+[ROOM general] <alice> hello everyone
+> /priv bob hey, got a sec?
+> /rooms
+[CLIENT] Rooms: general, random, dev
+```
+
+## Requirements
+
+Python 3.8+ — no external dependencies, stdlib only (`socket`, `struct`, `threading`).
+
+## Design notes
+
+The server uses one thread per client connection. Each client is tracked by chat name, and room membership is stored as a set of client references. The keepalive mechanism sends a heartbeat every 5 seconds; the server drops connections that go silent.
+
+Protocol design decisions are documented in `RFC.pdf`, written in IETF Internet-Draft format with RFC 2119 conformance language (MUST, SHOULD, MAY).
